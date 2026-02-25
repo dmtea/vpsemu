@@ -200,3 +200,17 @@ Basic concept: Incus as a replacement for Vagrant for learning Ansible.
 - Removed `cloud-init status --wait` — minimal `images:` image has no cloud-init, replaced with `sleep 5`
 - Fixed snapshot command: `incus snapshot` → `incus snapshot create` (new Incus CLI syntax)
 - SSH setup moved after `apt-get install openssh-server` — openssh not pre-installed in minimal image
+
+### v0.36 — IP-inside-container architecture (from real run analysis)
+- Root cause found: Incus `ipv4.address` in device is a FILTER, not IP configuration —
+  container never gets IP from it regardless of settings
+- Removed `nictype: bridged` — conflicts with `network:` property (validation error)
+- Removed `security.ipv4_filtering` from profile — blocks all traffic when no `ipv4.address`
+  is set in device at profile level; not useful without per-container IP override
+- Reverted to `images:ubuntu/24.04` — minimal image, faster, no cloud-init dependency
+- **New IP strategy**: set IP inside container via `ip addr add` + `ip route` after every
+  `incus start` or `incus restore` — deterministic, cloud-init-independent, works on copy
+- Replaced `sleep 5` with `until incus exec -- true` — reliable readiness check
+- Added connectivity check after IP setup (`ping -c 1 8.8.8.8`) — fast fail with clear error
+- Snapshot now explicitly contains neither IP nor password — both set fresh by agent each time
+- Added Bootstrap cleanup script — full Incus state reset for re-bootstrap from scratch

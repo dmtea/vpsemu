@@ -1,6 +1,6 @@
 ---
 name: vpsemu
-version: 0.35
+version: 0.36
 description: >
   Manage Incus containers that emulate VPS servers (Ubuntu 24.04).
   Use this skill to create, check, reset and delete test machines
@@ -95,10 +95,14 @@ sudo apt update && sudo apt install -y incus
 sudo usermod -aG incus-admin $USER && newgrp incus-admin
 incus admin init --minimal
 
-# Isolated network — NAT enabled for internet access, DHCP disabled (we use static IPs)
-incus network create incusbr1   ipv4.address=10.10.0.1/24   ipv4.dhcp=false   ipv4.nat=true   ipv6.address=none
+# Isolated network — NAT for internet, DHCP disabled (IPs are set inside containers)
+incus network create incusbr1 \
+  ipv4.address=10.10.0.1/24 \
+  ipv4.dhcp=false \
+  ipv4.nat=true \
+  ipv6.address=none
 
-# Base profile — note: security.ipv4_filtering=true required for static IP with DHCP disabled
+# Base profile — clean, no nictype/ipv4_filtering (both cause issues with "network:" property)
 incus profile create vps-base
 incus profile edit vps-base << 'EOF'
 config:
@@ -107,8 +111,6 @@ devices:
   eth0:
     name: eth0
     network: incusbr1
-    nictype: bridged
-    security.ipv4_filtering: "true"
     type: nic
   root:
     path: /
@@ -118,27 +120,40 @@ devices:
 name: vps-base
 EOF
 
-# Template container — use images: remote (ubuntu: remote is not configured by default)
-# Static IP is set separately after launch (--config flag doesn't work reliably at launch)
+# Template container — images:ubuntu/24.04 is a minimal image (no cloud-init, fast)
 incus launch images:ubuntu/24.04 vps-template --profile vps-base
-sleep 5  # wait for container to fully start (no cloud-init in minimal image)
 
-# Set static IP for template
-incus config device override vps-template eth0 ipv4.address=10.10.0.2
+# Wait for network stack to be ready (no cloud-init in minimal image)
+until incus exec vps-template -- true 2>/dev/null; do sleep 1; done
+sleep 3
 
-# Configure SSH — password is NOT set here
+# Set static IP inside container (Incus ipv4.address only filters, doesn't configure)
 incus exec vps-template -- bash -c "
-  apt-get update -qq && apt-get install -y openssh-server python3 python3-apt -qq && apt-get clean
-  printf 'PermitRootLogin yes
-PasswordAuthentication yes
-'     > /etc/ssh/sshd_config.d/99-vpsemu.conf
+  ip addr add 10.10.0.2/24 dev eth0
+  ip route add default via 10.10.0.1
+  echo 'nameserver 8.8.8.8' > /etc/resolv.conf
+"
+
+# Verify connectivity before installing packages
+incus exec vps-template -- ping -c 1 8.8.8.8 || { echo 'ERROR: no internet in container'; exit 1; }
+
+# Install packages and configure SSH
+incus exec vps-template -- bash -c "
+  apt-get update -qq
+  apt-get install -y openssh-server python3 python3-apt -qq
+  apt-get clean
+  printf "PermitRootLogin yes\nPasswordAuthentication yes\n" \
+    > /etc/ssh/sshd_config.d/99-vpsemu.conf
   systemctl restart ssh
 "
 
-# Snapshot stores clean OS without password — password is always set by agent after start
+# Snapshot stores clean OS without password and without IP — both are set by agent after start
 incus snapshot create vps-template clean-vps
 incus stop vps-template
 ```
+
+> **Note:** The snapshot does NOT contain a static IP — the container boots without IP.
+> The agent sets IP + password immediately after every `incus start` or `incus restore`.
 
 ---
 
@@ -222,12 +237,22 @@ IP_LAST=$(python3 -c "import hashlib; h=int(hashlib.md5('${NAME}'.encode()).hexd
 IP="10.10.0.${IP_LAST}"
 
 incus copy vps-template/clean-vps ${NAME}
-incus config device override ${NAME} eth0 ipv4.address=${IP}
 incus start ${NAME}
 
-until incus exec ${NAME} -- systemctl is-system-running --quiet 2>/dev/null; do sleep 1; done
+# Wait for container to accept commands
+until incus exec ${NAME} -- true 2>/dev/null; do sleep 1; done
+
+# Set static IP inside container
+incus exec ${NAME} -- bash -c "
+  ip addr add ${IP}/24 dev eth0
+  ip route add default via 10.10.0.1
+  echo 'nameserver 8.8.8.8' > /etc/resolv.conf
+"
+
+# Set password
 incus exec ${NAME} -- bash -c "echo 'root:${ROOT_PASS}' | chpasswd"
 
+# Wait for SSH
 until ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 root@${IP} true 2>/dev/null
 do sleep 1; done
 
@@ -261,7 +286,15 @@ incus stop ${NAME} --force 2>/dev/null || true
 incus restore ${NAME} clean-vps
 incus start ${NAME}
 
-until incus exec ${NAME} -- systemctl is-system-running --quiet 2>/dev/null; do sleep 1; done
+# Wait for container to accept commands
+until incus exec ${NAME} -- true 2>/dev/null; do sleep 1; done
+
+# Re-set IP and password (snapshot has no IP or password)
+incus exec ${NAME} -- bash -c "
+  ip addr add ${IP}/24 dev eth0
+  ip route add default via 10.10.0.1
+  echo 'nameserver 8.8.8.8' > /etc/resolv.conf
+"
 incus exec ${NAME} -- bash -c "echo 'root:${ROOT_PASS}' | chpasswd"
 
 until ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 root@${IP} true 2>/dev/null
@@ -321,3 +354,34 @@ ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i inventory \
 4. Never modify `vps-template` — it is a read-only source for `incus copy`.
 5. Agent does not read or modify containers with a foreign `AGENT_ID`.
 6. `ROOT_PASS` is never logged, never written to disk, never appears in container names — passed only at the moment of use.
+
+---
+
+## Bootstrap cleanup (owner only — full reset of Incus state)
+
+```bash
+#!/bin/bash
+# Run if you need to completely redo bootstrap from scratch
+
+set -e
+
+# Stop and delete all vpsemu containers
+for c in $(incus list --format csv | awk -F',' '{print $1}' | grep "^vpsemu-" || true); do
+  incus delete "$c" --force 2>/dev/null || true
+done
+
+incus delete vps-template --force 2>/dev/null || true
+incus profile delete vps-base 2>/dev/null || true
+incus profile device remove default eth0 2>/dev/null || true
+incus network delete incusbr1 2>/dev/null || true
+incus network delete incusbr0 2>/dev/null || true
+
+for img in $(incus image list --format csv | awk -F',' '{print $2}' || true); do
+  [ -n "$img" ] && incus image delete "$img" 2>/dev/null || true
+done
+
+incus profile device remove default root 2>/dev/null || true
+incus storage delete default 2>/dev/null || true
+
+echo "Cleanup done. Remaining containers: $(incus list --format csv | wc -l)"
+```

@@ -1,6 +1,6 @@
 ---
 name: vpsemu
-version: 0.35
+version: 0.36
 description: >
   Управление Incus-контейнерами которые имитируют VPS-серверы (Ubuntu 24.04).
   Используй этот скилл для создания, проверки, сброса и удаления тестовых
@@ -19,7 +19,6 @@ vpsemu-{AGENT_ID}-{TASK_NAME}
 Примеры:
   vpsemu-a3f9-deploy-nginx
   vpsemu-b7c1-setup-db
-  vpsemu-a3f9-task42
 ```
 
 - `vpsemu` — статичный префикс, всегда
@@ -96,10 +95,14 @@ sudo apt update && sudo apt install -y incus
 sudo usermod -aG incus-admin $USER && newgrp incus-admin
 incus admin init --minimal
 
-# Изолированная сеть — NAT включён для доступа в интернет, DHCP отключён (используем статичные IP)
-incus network create incusbr1   ipv4.address=10.10.0.1/24   ipv4.dhcp=false   ipv4.nat=true   ipv6.address=none
+# Изолированная сеть — NAT для интернета, DHCP отключён (IP задаются внутри контейнеров)
+incus network create incusbr1 \
+  ipv4.address=10.10.0.1/24 \
+  ipv4.dhcp=false \
+  ipv4.nat=true \
+  ipv6.address=none
 
-# Базовый профиль — security.ipv4_filtering=true обязателен для статичного IP при отключённом DHCP
+# Базовый профиль — чистый, без nictype/ipv4_filtering (оба конфликтуют со свойством "network:")
 incus profile create vps-base
 incus profile edit vps-base << 'EOF'
 config:
@@ -108,8 +111,6 @@ devices:
   eth0:
     name: eth0
     network: incusbr1
-    nictype: bridged
-    security.ipv4_filtering: "true"
     type: nic
   root:
     path: /
@@ -119,27 +120,40 @@ devices:
 name: vps-base
 EOF
 
-# Эталонный контейнер — используем remote images: (ubuntu: не настроен по умолчанию)
-# Статичный IP задаётся отдельно после запуска (флаг --config ненадёжен при launch)
+# Эталонный контейнер — images:ubuntu/24.04 это minimal образ (без cloud-init, быстрый)
 incus launch images:ubuntu/24.04 vps-template --profile vps-base
-sleep 5  # ждём полного старта (cloud-init отсутствует в minimal образе)
 
-# Установить статичный IP для шаблона
-incus config device override vps-template eth0 ipv4.address=10.10.0.2
+# Ждём готовности сетевого стека (cloud-init отсутствует в minimal образе)
+until incus exec vps-template -- true 2>/dev/null; do sleep 1; done
+sleep 3
 
-# Настроить SSH — пароль НЕ устанавливается здесь
+# Задать статичный IP внутри контейнера (Incus ipv4.address только фильтрует, не конфигурирует)
 incus exec vps-template -- bash -c "
-  apt-get update -qq && apt-get install -y openssh-server python3 python3-apt -qq && apt-get clean
-  printf 'PermitRootLogin yes
-PasswordAuthentication yes
-'     > /etc/ssh/sshd_config.d/99-vpsemu.conf
+  ip addr add 10.10.0.2/24 dev eth0
+  ip route add default via 10.10.0.1
+  echo 'nameserver 8.8.8.8' > /etc/resolv.conf
+"
+
+# Проверить сеть перед установкой пакетов
+incus exec vps-template -- ping -c 1 8.8.8.8 || { echo 'ERROR: no internet in container'; exit 1; }
+
+# Установить пакеты и настроить SSH
+incus exec vps-template -- bash -c "
+  apt-get update -qq
+  apt-get install -y openssh-server python3 python3-apt -qq
+  apt-get clean
+  printf "PermitRootLogin yes\nPasswordAuthentication yes\n" \
+    > /etc/ssh/sshd_config.d/99-vpsemu.conf
   systemctl restart ssh
 "
 
-# Снапшот хранит чистую ОС без пароля — пароль всегда ставится агентом после старта
+# Снапшот хранит чистую ОС без пароля и без IP — оба задаются агентом после каждого старта
 incus snapshot create vps-template clean-vps
 incus stop vps-template
 ```
+
+> **Важно:** Снапшот НЕ содержит статичного IP — контейнер стартует без IP.
+> Агент задаёт IP + пароль сразу после каждого `incus start` или `incus restore`.
 
 ---
 
@@ -148,7 +162,7 @@ incus stop vps-template
 ```bash
 # AGENT_ID берётся из контекста сессии (уже сгенерирован при загрузке скилла)
 TASK_NAME="deploy-nginx"               # агент назначает сам по смыслу задачи
-PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)  # корень проекта
+PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
 NAME="vpsemu-${AGENT_ID}-${TASK_NAME}"
 PREFIX="vpsemu-${AGENT_ID}"
@@ -162,7 +176,7 @@ PREFIX="vpsemu-${AGENT_ID}"
 
 ```bash
 _get_root_pass() {
-  local project_root="${1}"   # корень проекта, агент определяет по контексту
+  local project_root="${1}"
   local secrets_file="${project_root}/ansible/group_vars/all/secrets.enc.yml"
   local key="vault_root_password"
 
@@ -185,7 +199,7 @@ _get_root_pass() {
 
 if ! ROOT_PASS=$(_get_root_pass "${PROJECT_ROOT}"); then
   # агент спрашивает пользователя и присваивает ROOT_PASS вручную
-  echo "ACTION_REQUIRED: введите root пароль для контейнера"
+  echo "ACTION_REQUIRED: enter root password for container"
 fi
 ```
 
@@ -229,13 +243,22 @@ IP_LAST=$(python3 -c "import hashlib; h=int(hashlib.md5('${NAME}'.encode()).hexd
 IP="10.10.0.${IP_LAST}"
 
 incus copy vps-template/clean-vps ${NAME}
-incus config device override ${NAME} eth0 ipv4.address=${IP}
 incus start ${NAME}
 
-# Дождаться старта systemd и установить пароль
-until incus exec ${NAME} -- systemctl is-system-running --quiet 2>/dev/null; do sleep 1; done
+# Ждём готовности контейнера
+until incus exec ${NAME} -- true 2>/dev/null; do sleep 1; done
+
+# Задать статичный IP внутри контейнера
+incus exec ${NAME} -- bash -c "
+  ip addr add ${IP}/24 dev eth0
+  ip route add default via 10.10.0.1
+  echo 'nameserver 8.8.8.8' > /etc/resolv.conf
+"
+
+# Установить пароль
 incus exec ${NAME} -- bash -c "echo 'root:${ROOT_PASS}' | chpasswd"
 
+# Ждём SSH
 until ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 root@${IP} true 2>/dev/null
 do sleep 1; done
 
@@ -269,8 +292,15 @@ incus stop ${NAME} --force 2>/dev/null || true
 incus restore ${NAME} clean-vps
 incus start ${NAME}
 
-# После restore пароль сбрасывается к состоянию снапшота — устанавливаем заново
-until incus exec ${NAME} -- systemctl is-system-running --quiet 2>/dev/null; do sleep 1; done
+# Ждём готовности контейнера
+until incus exec ${NAME} -- true 2>/dev/null; do sleep 1; done
+
+# Перезадать IP и пароль (снапшот не содержит ни IP ни пароля)
+incus exec ${NAME} -- bash -c "
+  ip addr add ${IP}/24 dev eth0
+  ip route add default via 10.10.0.1
+  echo 'nameserver 8.8.8.8' > /etc/resolv.conf
+"
 incus exec ${NAME} -- bash -c "echo 'root:${ROOT_PASS}' | chpasswd"
 
 until ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 root@${IP} true 2>/dev/null
@@ -332,3 +362,34 @@ ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i inventory \
 4. Никогда не трогать `vps-template` — только источник для `incus copy`.
 5. Агент не читает и не изменяет контейнеры с чужим `AGENT_ID`.
 6. `ROOT_PASS` никогда не логируется, не пишется в файлы на диске, не появляется в именах контейнеров — передаётся только в момент использования.
+
+---
+
+## Bootstrap cleanup (только для владельца — полный сброс состояния Incus)
+
+```bash
+#!/bin/bash
+# Запускать если нужно полностью переделать bootstrap с нуля
+
+set -e
+
+# Остановить и удалить все vpsemu контейнеры
+for c in $(incus list --format csv | awk -F',' '{print $1}' | grep "^vpsemu-" || true); do
+  incus delete "$c" --force 2>/dev/null || true
+done
+
+incus delete vps-template --force 2>/dev/null || true
+incus profile delete vps-base 2>/dev/null || true
+incus profile device remove default eth0 2>/dev/null || true
+incus network delete incusbr1 2>/dev/null || true
+incus network delete incusbr0 2>/dev/null || true
+
+for img in $(incus image list --format csv | awk -F',' '{print $2}' || true); do
+  [ -n "$img" ] && incus image delete "$img" 2>/dev/null || true
+done
+
+incus profile device remove default root 2>/dev/null || true
+incus storage delete default 2>/dev/null || true
+
+echo "Очистка завершена. Осталось контейнеров: $(incus list --format csv | wc -l)"
+```

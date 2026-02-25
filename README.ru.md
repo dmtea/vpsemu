@@ -201,3 +201,17 @@ vpsemu-{AGENT_ID}-{TASK_NAME}
 - Убрана команда `cloud-init status --wait` — minimal образ `images:` не содержит cloud-init, заменена на `sleep 5`
 - Исправлена команда снапшота: `incus snapshot` → `incus snapshot create` (новый синтаксис Incus CLI)
 - Настройка SSH перенесена после `apt-get install openssh-server` — openssh не предустановлен в minimal образе
+
+### v0.36 — IP-внутри-контейнера (анализ реального запуска)
+- Найдена корневая причина: Incus `ipv4.address` в device — это ФИЛЬТР, не конфигурация IP —
+  контейнер никогда не получает IP от этой настройки независимо от значений
+- Убран `nictype: bridged` — конфликтует со свойством `network:` (ошибка валидации)
+- Убран `security.ipv4_filtering` из профиля — блокирует весь трафик когда `ipv4.address`
+  не задан в device на уровне профиля; бесполезен без per-container IP override
+- Возврат к `images:ubuntu/24.04` — minimal образ, быстрее, без зависимости от cloud-init
+- **Новая стратегия IP**: задавать IP внутри контейнера через `ip addr add` + `ip route` после
+  каждого `incus start` или `incus restore` — детерминированно, не зависит от cloud-init, работает при copy
+- Заменён `sleep 5` на `until incus exec -- true` — надёжная проверка готовности
+- Добавлена проверка связи после настройки IP (`ping -c 1 8.8.8.8`) — быстрый fail с понятной ошибкой
+- Снапшот явно не содержит ни IP ни пароля — оба задаются агентом заново при каждом старте
+- Добавлен Bootstrap cleanup скрипт — полный сброс состояния Incus для повторного bootstrap
