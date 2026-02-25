@@ -1,8 +1,8 @@
 ---
 name: vpsemu
-version: 0.33
+version: 0.34
 description: >
-  Manage LXD containers that emulate VPS servers (Ubuntu 24.04).
+  Manage Incus containers that emulate VPS servers (Ubuntu 24.04).
   Use this skill to create, check, reset and delete test machines
   for Ansible / IaC tasks. Supports parallel agents via strict
   namespace vpsemu-{AGENT_ID}-{TASK_NAME}. Never touch containers
@@ -45,7 +45,7 @@ opencode session fork copies full parent context including `AGENT_ID`. Two paral
 
 ```bash
 # Check if any containers with current AGENT_ID exist but were NOT created in this session
-EXISTING=$(lxc list --format csv | awk -F',' '{print $1}' | grep "^vpsemu-${AGENT_ID}-")
+EXISTING=$(incus list --format csv | awk -F',' '{print $1}' | grep "^vpsemu-${AGENT_ID}-")
 
 if [ -n "$EXISTING" ]; then
   # AGENT_ID was inherited from a forked/parent session — regenerate
@@ -60,26 +60,56 @@ This check is safe: if the agent itself created those containers earlier in the 
 
 ## Bootstrap (run once by owner before first agent launch)
 
+### 1. Install Incus
+
+**Ubuntu 24.04 (noble) — native package, no external repo needed:**
 ```bash
-sudo snap install lxd
-sudo usermod -aG lxd $USER && newgrp lxd
-lxd init --minimal
+sudo apt install incus
+```
+
+**Ubuntu 22.04 (jammy) / Pop!_OS 22.04 — via Zabbly repository:**
+```bash
+# Verify key fingerprint matches: 4EFC 5906 96CB 15B8 7C73 A3AD 82CC 8797 C838 DCFD
+curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --show-keys --fingerprint
+
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://pkgs.zabbly.com/key.asc \
+  -o /etc/apt/keyrings/zabbly.asc
+
+sudo sh -c 'cat <<EOF > /etc/apt/sources.list.d/zabbly-incus-stable.sources
+Enabled: yes
+Types: deb
+URIs: https://pkgs.zabbly.com/incus/stable
+Suites: $(. /etc/os-release && echo ${VERSION_CODENAME})
+Components: main
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/zabbly.asc
+EOF'
+
+sudo apt update && sudo apt install -y incus
+```
+
+### 2. Common setup (both versions)
+
+```bash
+sudo usermod -aG incus-admin $USER && newgrp incus-admin
+incus admin init --minimal
 
 # Isolated network, no DHCP
-lxc network create lxdbr1 \
+incus network create incusbr1 \
   ipv4.address=10.10.0.1/24 \
   ipv4.dhcp=false \
   ipv6.address=none
 
 # Base profile
-lxc profile create vps-base
-lxc profile edit vps-base << 'EOF'
+incus profile create vps-base
+incus profile edit vps-base << 'EOF'
 config:
   security.nesting: "false"
 devices:
   eth0:
     name: eth0
-    network: lxdbr1
+    network: incusbr1
     type: nic
   root:
     path: /
@@ -90,12 +120,12 @@ name: vps-base
 EOF
 
 # Template container
-lxc launch ubuntu:24.04 vps-template --profile vps-base \
+incus launch ubuntu:24.04 vps-template --profile vps-base \
   --config devices.eth0.ipv4.address=10.10.0.2
-lxc exec vps-template -- cloud-init status --wait
+incus exec vps-template -- cloud-init status --wait
 
 # Configure SSH — password is NOT set here
-lxc exec vps-template -- bash -c "
+incus exec vps-template -- bash -c "
   echo -e 'PermitRootLogin yes\nPasswordAuthentication yes' \
     > /etc/ssh/sshd_config.d/99-vpsemu.conf
   systemctl restart ssh
@@ -103,8 +133,8 @@ lxc exec vps-template -- bash -c "
 "
 
 # Snapshot stores clean OS without password — password is always set by agent after start
-lxc snapshot vps-template clean-vps
-lxc stop vps-template
+incus snapshot vps-template clean-vps
+incus stop vps-template
 ```
 
 ---
@@ -178,7 +208,7 @@ IP="10.10.0.${IP_LAST}"
 ### Check existence
 
 ```bash
-lxc list --format csv | awk -F',' '{print $1}' | grep -q "^${NAME}$" \
+incus list --format csv | awk -F',' '{print $1}' | grep -q "^${NAME}$" \
   && echo "EXISTS" || echo "NOT_FOUND"
 ```
 
@@ -188,12 +218,12 @@ lxc list --format csv | awk -F',' '{print $1}' | grep -q "^${NAME}$" \
 IP_LAST=$(python3 -c "import hashlib; h=int(hashlib.md5('${NAME}'.encode()).hexdigest(),16); print(10+(h%240))")
 IP="10.10.0.${IP_LAST}"
 
-lxc copy vps-template/clean-vps ${NAME} \
+incus copy vps-template/clean-vps ${NAME} \
   --config devices.eth0.ipv4.address=${IP}
-lxc start ${NAME}
+incus start ${NAME}
 
-until lxc exec ${NAME} -- systemctl is-system-running --quiet 2>/dev/null; do sleep 1; done
-lxc exec ${NAME} -- bash -c "echo 'root:${ROOT_PASS}' | chpasswd"
+until incus exec ${NAME} -- systemctl is-system-running --quiet 2>/dev/null; do sleep 1; done
+incus exec ${NAME} -- bash -c "echo 'root:${ROOT_PASS}' | chpasswd"
 
 until ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 root@${IP} true 2>/dev/null
 do sleep 1; done
@@ -204,32 +234,32 @@ echo "READY name=${NAME} ip=${IP} user=root"
 ### Get IP
 
 ```bash
-lxc list ${NAME} -c 4 --format csv | cut -d' ' -f1
+incus list ${NAME} -c 4 --format csv | cut -d' ' -f1
 ```
 
 ### Status
 
 ```bash
-lxc list ${NAME} --format csv | awk -F',' '{print $2}'
+incus list ${NAME} --format csv | awk -F',' '{print $2}'
 # → RUNNING | STOPPED | FROZEN | (empty = does not exist)
 ```
 
 ### Stop / Start
 
 ```bash
-lxc stop  ${NAME}
-lxc start ${NAME}
+incus stop  ${NAME}
+incus start ${NAME}
 ```
 
 ### Reset to clean state
 
 ```bash
-lxc stop ${NAME} --force 2>/dev/null || true
-lxc restore ${NAME} clean-vps
-lxc start ${NAME}
+incus stop ${NAME} --force 2>/dev/null || true
+incus restore ${NAME} clean-vps
+incus start ${NAME}
 
-until lxc exec ${NAME} -- systemctl is-system-running --quiet 2>/dev/null; do sleep 1; done
-lxc exec ${NAME} -- bash -c "echo 'root:${ROOT_PASS}' | chpasswd"
+until incus exec ${NAME} -- systemctl is-system-running --quiet 2>/dev/null; do sleep 1; done
+incus exec ${NAME} -- bash -c "echo 'root:${ROOT_PASS}' | chpasswd"
 
 until ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 root@${IP} true 2>/dev/null
 do sleep 1; done
@@ -239,20 +269,20 @@ echo "RESET_DONE name=${NAME} ip=${IP}"
 ### Delete
 
 ```bash
-lxc delete ${NAME} --force
+incus delete ${NAME} --force
 ```
 
 ### List own containers
 
 ```bash
-lxc list --format csv | awk -F',' '{print $1}' | grep "^${PREFIX}-"
+incus list --format csv | awk -F',' '{print $1}' | grep "^${PREFIX}-"
 ```
 
 ### Delete all own containers
 
 ```bash
-lxc list --format csv | awk -F',' '{print $1}' | grep "^${PREFIX}-" \
-  | xargs -r -I{} lxc delete {} --force
+incus list --format csv | awk -F',' '{print $1}' | grep "^${PREFIX}-" \
+  | xargs -r -I{} incus delete {} --force
 ```
 
 ---
@@ -284,7 +314,7 @@ ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i inventory \
 
 1. `AGENT_ID` is generated **once at session start** — never reassigned, never written to disk.
 2. Before any mutation (`stop`, `delete`, `restore`) — verify `${NAME}` starts with `vpsemu-${AGENT_ID}-`.
-3. Never run `lxc delete` without explicit full `${NAME}`.
-4. Never modify `vps-template` — it is a read-only source for `lxc copy`.
+3. Never run `incus delete` without explicit full `${NAME}`.
+4. Never modify `vps-template` — it is a read-only source for `incus copy`.
 5. Agent does not read or modify containers with a foreign `AGENT_ID`.
 6. `ROOT_PASS` is never logged, never written to disk, never appears in container names — passed only at the moment of use.

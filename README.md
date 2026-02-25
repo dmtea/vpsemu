@@ -1,7 +1,7 @@
 # vpsemu
 
 A skill for AI agents (opencode and compatible CLI agents) to create, manage and delete
-LXD containers that emulate clean VPS servers — for testing Ansible playbooks and
+Incus containers that emulate clean VPS servers — for testing Ansible playbooks and
 IaC infrastructure.
 
 ---
@@ -13,7 +13,7 @@ a clean server, run a playbook, verify it works — and reset. Renting a VPS for
 expensive and slow. Docker doesn't cut it — systemd, SSH, network interfaces behave
 differently from a real server.
 
-LXD containers solve this: start in seconds, behave like a real VPS (full systemd, SSH,
+Incus containers solve this: start in seconds, behave like a real VPS (full systemd, SSH,
 static IP, root access), and cost nothing.
 
 The skill gives the agent a ready set of commands + isolation rules so multiple agents
@@ -35,8 +35,8 @@ vpsemu/
 
 ## Requirements
 
-- Ubuntu 24.04 (host)
-- `snapd` for LXD installation
+- Ubuntu 22.04 (jammy) / Pop!_OS 22.04 or Ubuntu 24.04 (noble) as host
+- `incus` — native via apt (24.04) or Zabbly repository (22.04), see Bootstrap in SKILL.md
 - `sops` if using an encrypted secrets file
 - `python3`, `python3-yaml` on host (for parsing SOPS output)
 - Ansible project: expects structure `ansible/group_vars/all/secrets.enc.yml`
@@ -90,10 +90,10 @@ never collide on names or IP addresses.
 ## Changelog
 
 ### v0.01 — initial version
-Basic concept: LXD as a replacement for Vagrant for learning Ansible.
+Basic concept: Incus as a replacement for Vagrant for learning Ansible.
 - Image: `ubuntu:22.04`
 - Single container, manual SSH setup, root password access
-- Isolated network `lxdbr1` without DHCP, static IP set manually
+- Isolated network `incusbr1` without DHCP, static IP set manually
 - Base profile `vps-base`, template container `vps-template` with snapshot `clean-vps`
 - Commands: create / SSH / stop / start / delete / snapshot / restore
 - No isolation between agents — single user, single task
@@ -118,7 +118,7 @@ Basic concept: LXD as a replacement for Vagrant for learning Ansible.
 - `SESSION_ID` — session identifier, generated on each start
 - `ROLE` — container role in task (web, db, cache...)
 - Expanded security rules: agent does not touch containers with foreign `AGENT_ID`
-- Added Python SDK (`pylxd`) example for programmatic control from agent
+- Added programmatic control example via REST API
 
 ### v0.20 — simplification: SESSION_ID removed, ROLE → TASK_NAME
 - `SESSION_ID` removed as redundant — duplicated the meaning of `AGENT_ID`
@@ -152,8 +152,8 @@ Basic concept: LXD as a replacement for Vagrant for learning Ansible.
 - Found architectural bug: password was set in bootstrap as hardcode,
   inherited by snapshot, and did not match real password from SOPS
 - Fix: password completely removed from template and snapshot
-- Password is now set by agent via `lxc exec ... chpasswd` right after
-  `lxc start` — both on create and after every `lxc restore`
+- Password is now set by agent via `incus exec ... chpasswd` right after
+  `incus start` — both on create and after every `incus restore`
 - Snapshot now stores clean OS without password, independent of secret rotation
 
 ### v0.32 — Ubuntu 24.04 technical fixes
@@ -166,6 +166,7 @@ Basic concept: LXD as a replacement for Vagrant for learning Ansible.
 - Replaced `sleep 3` with `until systemctl is-system-running` in two places
   (create and restore) — deterministic wait for systemd readiness
   instead of fixed delay
+
 ### v0.33 — fork session detection
 - Added fork detection on initialization: opencode fork copies full parent context
   including `AGENT_ID`, which would cause two parallel forks to collide on containers
@@ -173,3 +174,17 @@ Basic concept: LXD as a replacement for Vagrant for learning Ansible.
   unknown to this session — if yes, `AGENT_ID` is regenerated
 - Safe by design: containers created in the current session are known from context;
   unrecognized containers indicate a fork → regenerate
+
+### v0.34 — switch from LXD (snap) to Incus (apt)
+- Replaced LXD with Incus — community fork of LXD, available via apt on Ubuntu 22.04/24.04
+- Reason: LXD removed from standard apt repos in Ubuntu 24.04, snap-only; Incus is actively
+  maintained by the community and installs cleanly via Zabbly repository
+- Ubuntu 24.04: Incus available natively via `apt install incus` — no external repo needed
+- Ubuntu 22.04 / Pop!_OS 22.04: install via Zabbly apt repository using `VERSION_CODENAME`
+- Fixed Zabbly key filename: `zabbly.asc` (not `.gpg`) per official docs
+- Added key fingerprint verification step per official Zabbly instructions
+- snap install replaced with apt (native or Zabbly)
+- Init command changed from `lxd init --minimal` to `incus admin init --minimal`
+- Group changed from `lxd` to `incus-admin`
+- All `lxc` CLI commands replaced with `incus` — API and behavior identical
+- Compatible with Ubuntu 22.04 (jammy), 24.04 (noble) and derivatives incl. Pop!_OS 22.04
