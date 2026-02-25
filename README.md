@@ -188,3 +188,15 @@ Basic concept: Incus as a replacement for Vagrant for learning Ansible.
 - Group changed from `lxd` to `incus-admin`
 - All `lxc` CLI commands replaced with `incus` — API and behavior identical
 - Compatible with Ubuntu 22.04 (jammy), 24.04 (noble) and derivatives incl. Pop!_OS 22.04
+
+### v0.35 — bootstrap fixes from real run
+- Fixed `curl` key download missing `sudo` — caused write permission error to `/etc/apt/keyrings/`
+- Fixed container image: `ubuntu:24.04` remote doesn't exist by default → use `images:ubuntu/24.04`
+- Fixed static IP assignment: `--config devices.eth0.ipv4.address` at launch doesn't work →
+  use `incus config device override` after launch
+- Fixed network: added `ipv4.nat=true` — without it containers have no internet access (apt fails)
+- Fixed profile: added `security.ipv4_filtering=true` to eth0 device — required for static IP
+  when DHCP is disabled on network
+- Removed `cloud-init status --wait` — minimal `images:` image has no cloud-init, replaced with `sleep 5`
+- Fixed snapshot command: `incus snapshot` → `incus snapshot create` (new Incus CLI syntax)
+- SSH setup moved after `apt-get install openssh-server` — openssh not pre-installed in minimal image

@@ -1,6 +1,6 @@
 ---
 name: vpsemu
-version: 0.34
+version: 0.35
 description: >
   Управление Incus-контейнерами которые имитируют VPS-серверы (Ubuntu 24.04).
   Используй этот скилл для создания, проверки, сброса и удаления тестовых
@@ -74,7 +74,7 @@ sudo apt install incus
 curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --show-keys --fingerprint
 
 sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://pkgs.zabbly.com/key.asc \
+sudo curl -fsSL https://pkgs.zabbly.com/key.asc \
   -o /etc/apt/keyrings/zabbly.asc
 
 sudo sh -c 'cat <<EOF > /etc/apt/sources.list.d/zabbly-incus-stable.sources
@@ -96,13 +96,10 @@ sudo apt update && sudo apt install -y incus
 sudo usermod -aG incus-admin $USER && newgrp incus-admin
 incus admin init --minimal
 
-# Изолированная сеть без DHCP
-incus network create incusbr1 \
-  ipv4.address=10.10.0.1/24 \
-  ipv4.dhcp=false \
-  ipv6.address=none
+# Изолированная сеть — NAT включён для доступа в интернет, DHCP отключён (используем статичные IP)
+incus network create incusbr1   ipv4.address=10.10.0.1/24   ipv4.dhcp=false   ipv4.nat=true   ipv6.address=none
 
-# Базовый профиль
+# Базовый профиль — security.ipv4_filtering=true обязателен для статичного IP при отключённом DHCP
 incus profile create vps-base
 incus profile edit vps-base << 'EOF'
 config:
@@ -111,6 +108,8 @@ devices:
   eth0:
     name: eth0
     network: incusbr1
+    nictype: bridged
+    security.ipv4_filtering: "true"
     type: nic
   root:
     path: /
@@ -120,21 +119,25 @@ devices:
 name: vps-base
 EOF
 
-# Эталонный контейнер
-incus launch ubuntu:24.04 vps-template --profile vps-base \
-  --config devices.eth0.ipv4.address=10.10.0.2
-incus exec vps-template -- cloud-init status --wait
+# Эталонный контейнер — используем remote images: (ubuntu: не настроен по умолчанию)
+# Статичный IP задаётся отдельно после запуска (флаг --config ненадёжен при launch)
+incus launch images:ubuntu/24.04 vps-template --profile vps-base
+sleep 5  # ждём полного старта (cloud-init отсутствует в minimal образе)
+
+# Установить статичный IP для шаблона
+incus config device override vps-template eth0 ipv4.address=10.10.0.2
 
 # Настроить SSH — пароль НЕ устанавливается здесь
 incus exec vps-template -- bash -c "
-  echo -e 'PermitRootLogin yes\nPasswordAuthentication yes' \
-    > /etc/ssh/sshd_config.d/99-vpsemu.conf
+  apt-get update -qq && apt-get install -y openssh-server python3 python3-apt -qq && apt-get clean
+  printf 'PermitRootLogin yes
+PasswordAuthentication yes
+'     > /etc/ssh/sshd_config.d/99-vpsemu.conf
   systemctl restart ssh
-  apt-get update -qq && apt-get install -y python3 python3-apt -qq && apt-get clean
 "
 
 # Снапшот хранит чистую ОС без пароля — пароль всегда ставится агентом после старта
-incus snapshot vps-template clean-vps
+incus snapshot create vps-template clean-vps
 incus stop vps-template
 ```
 
@@ -225,8 +228,8 @@ incus list --format csv | awk -F',' '{print $1}' | grep -q "^${NAME}$" \
 IP_LAST=$(python3 -c "import hashlib; h=int(hashlib.md5('${NAME}'.encode()).hexdigest(),16); print(10+(h%240))")
 IP="10.10.0.${IP_LAST}"
 
-incus copy vps-template/clean-vps ${NAME} \
-  --config devices.eth0.ipv4.address=${IP}
+incus copy vps-template/clean-vps ${NAME}
+incus config device override ${NAME} eth0 ipv4.address=${IP}
 incus start ${NAME}
 
 # Дождаться старта systemd и установить пароль

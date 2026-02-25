@@ -1,6 +1,6 @@
 ---
 name: vpsemu
-version: 0.34
+version: 0.35
 description: >
   Manage Incus containers that emulate VPS servers (Ubuntu 24.04).
   Use this skill to create, check, reset and delete test machines
@@ -73,7 +73,7 @@ sudo apt install incus
 curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --show-keys --fingerprint
 
 sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://pkgs.zabbly.com/key.asc \
+sudo curl -fsSL https://pkgs.zabbly.com/key.asc \
   -o /etc/apt/keyrings/zabbly.asc
 
 sudo sh -c 'cat <<EOF > /etc/apt/sources.list.d/zabbly-incus-stable.sources
@@ -95,13 +95,10 @@ sudo apt update && sudo apt install -y incus
 sudo usermod -aG incus-admin $USER && newgrp incus-admin
 incus admin init --minimal
 
-# Isolated network, no DHCP
-incus network create incusbr1 \
-  ipv4.address=10.10.0.1/24 \
-  ipv4.dhcp=false \
-  ipv6.address=none
+# Isolated network — NAT enabled for internet access, DHCP disabled (we use static IPs)
+incus network create incusbr1   ipv4.address=10.10.0.1/24   ipv4.dhcp=false   ipv4.nat=true   ipv6.address=none
 
-# Base profile
+# Base profile — note: security.ipv4_filtering=true required for static IP with DHCP disabled
 incus profile create vps-base
 incus profile edit vps-base << 'EOF'
 config:
@@ -110,6 +107,8 @@ devices:
   eth0:
     name: eth0
     network: incusbr1
+    nictype: bridged
+    security.ipv4_filtering: "true"
     type: nic
   root:
     path: /
@@ -119,21 +118,25 @@ devices:
 name: vps-base
 EOF
 
-# Template container
-incus launch ubuntu:24.04 vps-template --profile vps-base \
-  --config devices.eth0.ipv4.address=10.10.0.2
-incus exec vps-template -- cloud-init status --wait
+# Template container — use images: remote (ubuntu: remote is not configured by default)
+# Static IP is set separately after launch (--config flag doesn't work reliably at launch)
+incus launch images:ubuntu/24.04 vps-template --profile vps-base
+sleep 5  # wait for container to fully start (no cloud-init in minimal image)
+
+# Set static IP for template
+incus config device override vps-template eth0 ipv4.address=10.10.0.2
 
 # Configure SSH — password is NOT set here
 incus exec vps-template -- bash -c "
-  echo -e 'PermitRootLogin yes\nPasswordAuthentication yes' \
-    > /etc/ssh/sshd_config.d/99-vpsemu.conf
+  apt-get update -qq && apt-get install -y openssh-server python3 python3-apt -qq && apt-get clean
+  printf 'PermitRootLogin yes
+PasswordAuthentication yes
+'     > /etc/ssh/sshd_config.d/99-vpsemu.conf
   systemctl restart ssh
-  apt-get update -qq && apt-get install -y python3 python3-apt -qq && apt-get clean
 "
 
 # Snapshot stores clean OS without password — password is always set by agent after start
-incus snapshot vps-template clean-vps
+incus snapshot create vps-template clean-vps
 incus stop vps-template
 ```
 
@@ -218,8 +221,8 @@ incus list --format csv | awk -F',' '{print $1}' | grep -q "^${NAME}$" \
 IP_LAST=$(python3 -c "import hashlib; h=int(hashlib.md5('${NAME}'.encode()).hexdigest(),16); print(10+(h%240))")
 IP="10.10.0.${IP_LAST}"
 
-incus copy vps-template/clean-vps ${NAME} \
-  --config devices.eth0.ipv4.address=${IP}
+incus copy vps-template/clean-vps ${NAME}
+incus config device override ${NAME} eth0 ipv4.address=${IP}
 incus start ${NAME}
 
 until incus exec ${NAME} -- systemctl is-system-running --quiet 2>/dev/null; do sleep 1; done

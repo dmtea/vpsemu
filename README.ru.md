@@ -189,3 +189,15 @@ vpsemu-{AGENT_ID}-{TASK_NAME}
 - Группа изменена с `lxd` на `incus-admin`
 - Все CLI-команды `lxc` заменены на `incus` — API и поведение идентичны
 - Совместимо с Ubuntu 22.04 (jammy), 24.04 (noble) и производными incl. Pop!_OS 22.04
+
+### v0.35 — исправления bootstrap по результатам реального запуска
+- Исправлен `curl` для загрузки ключа: отсутствовал `sudo` → ошибка записи в `/etc/apt/keyrings/`
+- Исправлен образ контейнера: remote `ubuntu:24.04` не существует по умолчанию → `images:ubuntu/24.04`
+- Исправлено назначение статичного IP: флаг `--config devices.eth0.ipv4.address` при launch не работает →
+  используется `incus config device override` после запуска
+- Исправлена сеть: добавлен `ipv4.nat=true` — без него у контейнеров нет интернета (apt падает)
+- Исправлен профиль: добавлен `security.ipv4_filtering=true` для eth0 — обязателен для статичного IP
+  при отключённом DHCP на сети
+- Убрана команда `cloud-init status --wait` — minimal образ `images:` не содержит cloud-init, заменена на `sleep 5`
+- Исправлена команда снапшота: `incus snapshot` → `incus snapshot create` (новый синтаксис Incus CLI)
+- Настройка SSH перенесена после `apt-get install openssh-server` — openssh не предустановлен в minimal образе
