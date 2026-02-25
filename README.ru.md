@@ -25,10 +25,10 @@ LXD-контейнеры решают это: запускаются за сек
 
 ```
 vpsemu/
-├── vpsemu.skill.md      — сам скилл, подключается к агенту
-├── vpsemu.skill.ru.md   — русская версия для чтения/редактирования
-├── README.md            — документация (английский)
-└── README.ru.md         — этот файл
+├── SKILL.md      — сам скилл, подключается к агенту
+├── SKILL.ru.md   — русская версия для чтения/редактирования
+├── README.md     — документация (английский)
+└── README.ru.md  — этот файл
 ```
 
 ---
@@ -45,19 +45,30 @@ vpsemu/
 
 ## Быстрый старт
 
-1. Выполнить Bootstrap-секцию из `vpsemu.skill.md` — один раз на хосте
-2. Подключить `vpsemu.skill.md` к агенту (через skills-папку или system prompt)
+1. Выполнить Bootstrap-секцию из `SKILL.md` — один раз на хосте
+2. Подключить `SKILL.md` к агенту (через skills-папку или system prompt)
 3. Агент при загрузке скилла автоматически генерирует `AGENT_ID` и готов к работе
 
 ---
 
 ## Подключение к агенту
 
-Положить `vpsemu.skill.md` в папку скиллов агента. Для opencode и совместимых агентов
-это обычно `~/.config/<agent>/skills/` или папка проекта `skills/`.
+opencode ищет скиллы в формате `<name>/SKILL.md`. Два варианта:
+
+**Проектный (рекомендуется):**
+```bash
+mkdir -p .opencode/skills
+git clone https://github.com/dmtea/vpsemu .opencode/skills/vpsemu
+```
+
+**Глобальный (доступен во всех проектах):**
+```bash
+mkdir -p ~/.config/opencode/skills
+git clone https://github.com/dmtea/vpsemu ~/.config/opencode/skills/vpsemu
+```
 
 При загрузке скилла агент обязан немедленно выполнить инициализацию `AGENT_ID` —
-это описано в секции `⚡ Инициализация` внутри скилла.
+это описано в секции `⚡ Инициализация` внутри `SKILL.md`.
 
 ---
 

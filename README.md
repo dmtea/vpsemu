@@ -25,10 +25,10 @@ can work in parallel without interfering.
 
 ```
 vpsemu/
-├── vpsemu.skill.md      — the skill itself, loaded by agent
-├── vpsemu.skill.ru.md   — Russian version for reading/editing
-├── README.md            — this file
-└── README.ru.md         — Russian version of this file
+├── SKILL.md      — the skill itself, loaded by agent
+├── SKILL.ru.md   — Russian version for reading/editing
+├── README.md     — this file
+└── README.ru.md  — Russian version of this file
 ```
 
 ---
@@ -45,19 +45,30 @@ vpsemu/
 
 ## Quick start
 
-1. Run the Bootstrap section from `vpsemu.skill.md` — once on the host
-2. Load `vpsemu.skill.md` into the agent (via skills folder or system prompt)
+1. Run the Bootstrap section from `SKILL.md` — once on the host
+2. Load `SKILL.md` into the agent (via skills folder or system prompt)
 3. Agent auto-generates `AGENT_ID` on skill load and is ready
 
 ---
 
 ## Connecting to agent
 
-Place `vpsemu.skill.md` in the agent's skills folder. For opencode and compatible agents
-this is typically `~/.config/<agent>/skills/` or the project folder `skills/`.
+opencode looks for skills in `<name>/SKILL.md` format. Two options:
+
+**Project-level (recommended):**
+```bash
+mkdir -p .opencode/skills
+git clone https://github.com/dmtea/vpsemu .opencode/skills/vpsemu
+```
+
+**Global (available in all projects):**
+```bash
+mkdir -p ~/.config/opencode/skills
+git clone https://github.com/dmtea/vpsemu ~/.config/opencode/skills/vpsemu
+```
 
 On skill load the agent must immediately run `AGENT_ID` initialization —
-described in the `⚡ Initialization` section inside the skill.
+described in the `⚡ Initialization` section inside `SKILL.md`.
 
 ---
 
