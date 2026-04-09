@@ -131,6 +131,7 @@ sleep 3
 incus exec vps-template -- bash -c "
   ip addr add 10.10.0.2/24 dev eth0
   ip route add default via 10.10.0.1
+  rm -f /etc/resolv.conf
   echo 'nameserver 8.8.8.8' > /etc/resolv.conf
 "
 
@@ -153,7 +154,8 @@ incus stop vps-template
 ```
 
 > **Note:** The snapshot does NOT contain a static IP — the container boots without IP.
-> The agent sets IP + password immediately after every `incus start` or `incus restore`.
+> The agent sets IP + password immediately after every `incus start` or `incus snapshot restore`.
+> Also, `/etc/resolv.conf` must be removed before writing (it may be a protected symlink in minimal images).
 
 ---
 
@@ -246,6 +248,7 @@ until incus exec ${NAME} -- true 2>/dev/null; do sleep 1; done
 incus exec ${NAME} -- bash -c "
   ip addr add ${IP}/24 dev eth0
   ip route add default via 10.10.0.1
+  rm -f /etc/resolv.conf
   echo 'nameserver 8.8.8.8' > /etc/resolv.conf
 "
 
@@ -283,7 +286,7 @@ incus start ${NAME}
 
 ```bash
 incus stop ${NAME} --force 2>/dev/null || true
-incus restore ${NAME} clean-vps
+incus snapshot restore ${NAME} clean-vps
 incus start ${NAME}
 
 # Wait for container to accept commands
@@ -293,6 +296,7 @@ until incus exec ${NAME} -- true 2>/dev/null; do sleep 1; done
 incus exec ${NAME} -- bash -c "
   ip addr add ${IP}/24 dev eth0
   ip route add default via 10.10.0.1
+  rm -f /etc/resolv.conf
   echo 'nameserver 8.8.8.8' > /etc/resolv.conf
 "
 incus exec ${NAME} -- bash -c "echo 'root:${ROOT_PASS}' | chpasswd"
